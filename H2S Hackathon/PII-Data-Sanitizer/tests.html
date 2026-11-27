@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; form-action 'none'">
+  <title>PRIVORA — Browser Self-Test Runner</title>
+  <script src="theme-init.js"></script>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="container">
+    <section class="panel">
+      <div class="panel-header">
+        <div>
+          <h1>PRIVORA — Browser Self-Test Suite</h1>
+          <p class="panel-desc">Dependency-free in-browser verification of detection, Luhn/Verhoeff validation, XSS inertness, CSV safety, and redaction.</p>
+        </div>
+        <a href="index.html" class="btn btn-secondary">Back to App</a>
+      </div>
+      <div id="testSummary" class="inspector-bar">Running tests...</div>
+      <ul id="testResults" class="modal-list"></ul>
+    </section>
+  </main>
+  <script src="script.js"></script>
+  <script>
+    (function () {
+      var Engine = window.PIIEngine;
+      var list = document.getElementById('testResults');
+      var summary = document.getElementById('testSummary');
+      var passed = 0;
+      var failed = 0;
+
+      function assert(cond, msg) {
+        if (!cond) throw new Error(msg || 'Assertion failed');
+      }
+
+      function run(name, fn) {
+        var li = document.createElement('li');
+        try {
+          fn();
+          passed++;
+          li.className = 'self-test-pass';
+          li.textContent = 'PASS: ' + name;
+        } catch (e) {
+          failed++;
+          li.className = 'self-test-fail';
+          li.textContent = 'FAIL: ' + name + ' -> ' + e.message;
+        }
+        list.appendChild(li);
+      }
+
+      run('Email detection & boundaries', function () {
+        var d = Engine.detectPII('Mail (user+tag@Example.COM). Bad: a@b').filter(function (x) { return x.type === 'EMAIL'; });
+        assert(d.length === 1 && d[0].value === 'user+tag@Example.COM', 'Expected 1 email');
+      });
+
+      run('Luhn validation rejects random 16-digit numbers', function () {
+        var d = Engine.detectPII('4111111111111111 4111111111111112 9910284756102938 1234567890123456 4242424242424241').filter(function (x) { return x.type === 'PAYMENT_CARD'; });
+        assert(d.length === 1 && d[0].value === '4111111111111111', 'Expected only valid Luhn Visa');
+      });
+
+      run('Verhoeff Aadhaar validation & default unverified OFF', function () {
+        var d = Engine.detectPII('2345 6789 0124 2345 6789 0125 1234 5678 9012');
+        var valid = d.filter(function (x) { return x.type === 'AADHAAR'; });
+        var unv = d.filter(function (x) { return x.type === 'AADHAAR_UNVERIFIED'; });
+        assert(valid.length === 1 && valid[0].value === '2345 6789 0124', 'Valid Verhoeff failed');
+        assert(unv.length === 0, 'Unverified should be off by default');
+      });
+
+      run('XSS payload renders as inert textContent', function () {
+        var probe = document.createElement('div');
+        var payload = '<img src=x onerror=alert(1)> rahul@gmail.com';
+        var res = Engine.analyzeAndRedact(payload, { mode: 'full' });
+        probe.textContent = res.sanitizedText;
+        assert(probe.querySelector('img') === null, 'XSS element must not exist');
+        assert(probe.textContent === '<img src=x onerror=alert(1)> [REDACTED]', 'Inert text mismatch');
+      });
+
+      run('Pseudonym consistency across Indian phone formats', function () {
+        var s = Engine.createPseudonymSession();
+        var out = Engine.analyzeAndRedact('+91 9876543210 | 9876543210 | 09876543210', { mode: 'pseudonym' }, s).sanitizedText;
+        assert(out === 'PHONE_01 | PHONE_01 | PHONE_01', 'Got: ' + out);
+      });
+
+      run('CSV formula-injection neutralization & column exclusion', function () {
+        var out = Engine.sanitizeCSV('Name,Email\n=1+1,a@b.com', { mode: 'full' });
+        assert(out.sanitizedCSV.indexOf("'=1+1") !== -1, 'Formula not neutralized');
+        assert(out.sanitizedCSV.indexOf('[REDACTED]') !== -1, 'Email not redacted');
+      });
+
+      run('Reversible pseudonym mapping round-trip & risk score drop', function () {
+        var s = Engine.createPseudonymSession();
+        var res = Engine.analyzeAndRedact('Email a@b.com PAN ABCPE1234F', { mode: 'pseudonym' }, s);
+        assert(res.counts.risk.beforeScore > 0 && res.counts.risk.afterScore === 0, 'Risk score mismatch');
+        var m = Engine.exportPseudonymMapping(s);
+        var back = Engine.restoreFromMapping(res.sanitizedText, m);
+        assert(back.restoredText === 'Email a@b.com PAN ABCPE1234F', 'Restore failed');
+      });
+
+      run('Built-in engine self-tests pass', function () {
+        var self = Engine.runSelfTests();
+        assert(self.passed === self.total, self.passed + '/' + self.total);
+      });
+
+      summary.textContent = 'Browser Self-Test: ' + passed + ' passed, ' + failed + ' failed out of ' + (passed + failed);
+    })();
+  </script>
+</body>
+</html>
